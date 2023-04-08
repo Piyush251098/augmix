@@ -1,0 +1,5 @@
+augmix-venv
+data
+*.pyc
+*.tar
+*.csv
