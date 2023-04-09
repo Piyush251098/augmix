@@ -30,11 +30,13 @@ import time
 import augmentations
 from models.cifar.allconv import AllConvNet
 import numpy as np
+from torchvision.models import resnet18
 from third_party.ResNeXt_DenseNet.models.densenet import densenet
 from third_party.ResNeXt_DenseNet.models.resnext import resnext29
 from third_party.WideResNet_pytorch.wideresnet import WideResNet
 
 import torch
+import torch.nn as nn
 import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
 from torchvision import datasets
@@ -54,7 +56,7 @@ parser.add_argument(
     '-m',
     type=str,
     default='wrn',
-    choices=['wrn', 'allconv', 'densenet', 'resnext'],
+    choices=['wrn', 'allconv', 'densenet', 'resnext', 'resnet18'],
     help='Choose architecture.')
 # Optimization options
 parser.add_argument(
@@ -338,6 +340,8 @@ def main():
     net = AllConvNet(num_classes)
   elif args.model == 'resnext':
     net = resnext29(num_classes=num_classes)
+  elif args.model == 'resnet18':
+    net = resnet18(num_classes=num_classes)
 
   optimizer = torch.optim.SGD(
       net.parameters(),
