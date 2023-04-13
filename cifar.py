@@ -36,7 +36,7 @@ from third_party.ResNeXt_DenseNet.models.resnext import resnext29
 from third_party.WideResNet_pytorch.wideresnet import WideResNet
 
 import torch
-import torch.nn as nn
+from torch.nn import Linear
 import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
 from torchvision import datasets
@@ -56,7 +56,7 @@ parser.add_argument(
     '-m',
     type=str,
     default='wrn',
-    choices=['wrn', 'allconv', 'densenet', 'resnext', 'resnet18'],
+    choices=['wrn', 'allconv', 'densenet', 'resnext', 'resnet18', 'resnet18PT'],
     help='Choose architecture.')
 # Optimization options
 parser.add_argument(
@@ -342,6 +342,12 @@ def main():
     net = resnext29(num_classes=num_classes)
   elif args.model == 'resnet18':
     net = resnet18(num_classes=num_classes)
+  elif args.model == 'resnet18PT':
+    net = resnet18(pretrained=True)
+    input_features = net.fc.in_features
+    net.fc = Linear(input_features,num_classes)
+
+
 
   optimizer = torch.optim.SGD(
       net.parameters(),
