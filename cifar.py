@@ -36,11 +36,17 @@ from third_party.ResNeXt_DenseNet.models.resnext import resnext29
 from third_party.WideResNet_pytorch.wideresnet import WideResNet
 
 import torch
+torch.cuda.empty_cache()
 from torch.nn import Linear
 import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
 from torchvision import datasets
 from torchvision import transforms
+from torchvision import models
+import timm
+from torch.utils.tensorboard import SummaryWriter
+
+#writer = SummaryWriter()
 
 parser = argparse.ArgumentParser(
     description='Trains a CIFAR Classifier',
@@ -56,8 +62,24 @@ parser.add_argument(
     '-m',
     type=str,
     default='wrn',
-    choices=['wrn', 'allconv', 'densenet', 'resnext', 'resnet18', 'resnet18PT'],
+    choices=['wrn', 'allconv', 'densenet', 'resnext', 'resnet18', 'resnet18PT', 'ConvNeXt', 'ConvNeXtPT'],
     help='Choose architecture.')
+parser.add_argument(
+    '--optimizer',
+    '-o',
+    type=str,
+    default='SGD',
+    choices=['SGD', 'AdamW'],
+    help= 'Choose Optimizer.')
+parser.add_argument(
+  '--scheduler',
+  '-sc',
+  type=str,
+  default='LambdaLR',
+  choices=['LambdaLR', 'CosineAnnealingLR'],
+  help='Choose Architecture.'
+)
+    
 # Optimization options
 parser.add_argument(
     '--epochs', '-e', type=int, default=100, help='Number of epochs to train.')
@@ -142,6 +164,13 @@ CORRUPTIONS = [
     'glass_blur', 'motion_blur', 'zoom_blur', 'snow', 'frost', 'fog',
     'brightness', 'contrast', 'elastic_transform', 'pixelate',
     'jpeg_compression'
+]
+
+PERTUBATIONS = [
+  'brightness', 'gaussian_blur', 'gaussian_noise_2', 'gaussian_noise_3', 'gaussian_noise',
+  'motion_blur', 'rotate', 'scale', 'shear', 'shot_noise_2', 'shot_noise_3', 'shot_noise',
+  'snow', 'spatter', 'speckle_noise_2', 'speckle_noise_3', 'speckle_noise', 'tilt', 'translate',
+  'zoom_blur'
 ]
 
 
@@ -241,8 +270,12 @@ def train(net, train_loader, optimizer, scheduler):
     optimizer.step()
     scheduler.step()
     loss_ema = loss_ema * 0.9 + float(loss) * 0.1
+
+    
+
     if i % args.print_freq == 0:
       print('Train Loss {:.3f}'.format(loss_ema))
+      
 
   return loss_ema
 
@@ -287,10 +320,60 @@ def test_c(net, test_data, base_path):
 
   return np.mean(corruption_accs)
 
+def flip_prob(predictions, noise_pertubations=False):
+  result = 0
+  step_size = 1
+
+  for vid_pred in predictions:
+    result_for_vid = []
+
+    for i in range(step_size):
+      prev_pred = vid_pred[i]
+
+      for pred in vid_pred[i::step_size][1:]:
+        result_for_vid.append(int(prev_pred != pred))
+        if not noise_pertubations: prev_pred = pred
+
+    result += np.mean(result_for_vid) / len(predictions)
+
+  return result
+
+def test_p(net, base_path, num_classes):
+  """Evaluate network on given pertubated dataset"""
+  pertubated_accs = []
+  for pertubations in PERTUBATIONS:
+    test_dataset_p =  torch.from_numpy(np.float32(np.load(base_path + pertubations + '.npy').transpose((0,1,4,2,3))))/255.
+    loader = torch.utils.data.DataLoader(test_dataset_p, batch_size=args.eval_batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True)
+
+    predictions = []
+    with torch.no_grad():
+      for data in loader:
+        num_videos = data.size(0)
+        data = data.view(-1,3,32,32).cuda()
+
+        output = net(data * 2 - 1)
+
+        for vid in output.view(num_videos, -1, num_classes):
+          predictions.append(vid.argmax(1).to('cpu').numpy())
+      current_flip = flip_prob(predictions, True if 'noise' in pertubations else False)
+      pertubated_accs.append(current_flip)
+      print('\n' + pertubations, 'Flipping Rate')
+      print(current_flip)
+
+  return np.mean(pertubated_accs)
+
+
+          
+
+
+
+
 
 def main():
   torch.manual_seed(1)
   np.random.seed(1)
+
+  writer = SummaryWriter(comment='-' + args.model + '-' + args.optimizer + '-' + args.scheduler)
 
   # Load datasets
   train_transform = transforms.Compose(
@@ -307,6 +390,7 @@ def main():
     test_data = datasets.CIFAR10(
         './data/cifar', train=False, transform=test_transform, download=True)
     base_c_path = './data/cifar/CIFAR-10-C/'
+    base_p_path = './data/cifar/CIFAR-10-P/'
     num_classes = 10
   else:
     train_data = datasets.CIFAR100(
@@ -341,20 +425,34 @@ def main():
   elif args.model == 'resnext':
     net = resnext29(num_classes=num_classes)
   elif args.model == 'resnet18':
-    net = resnet18(num_classes=num_classes)
+    net = models.resnet18(num_classes=num_classes)
   elif args.model == 'resnet18PT':
-    net = resnet18(pretrained=True)
+    net = models.resnet18(pretrained=True)
     input_features = net.fc.in_features
     net.fc = Linear(input_features,num_classes)
+  elif args.model == 'ConvNeXt':
+    net = timm.create_model("convnext_tiny", num_classes=num_classes)
+  elif args.model == 'ConvNeXtPT':
+    net  = timm.create_model("convnext_tiny",pretrained=True)
+    input_features = net.get_classifier().in_features; input_features
+    net.fc = Linear (input_features, num_classes)
+    
+    
 
-
-
-  optimizer = torch.optim.SGD(
+  #Optimizer
+  if args.optimizer == 'SGD':
+      optimizer = torch.optim.SGD(
       net.parameters(),
       args.learning_rate,
       momentum=args.momentum,
       weight_decay=args.decay,
       nesterov=True)
+  elif args.optimizer == 'AdamW':
+      optimizer = torch.optim.AdamW(
+        net.parameters(),
+        args.learning_rate,
+        weight_decay=args.decay,
+      )
 
   # Distribute model across all visible GPUs
   net = torch.nn.DataParallel(net).cuda()
@@ -380,14 +478,22 @@ def main():
     test_c_acc = test_c(net, test_data, base_c_path)
     print('Mean Corruption Error: {:.3f}'.format(100 - 100. * test_c_acc))
     return
-
-  scheduler = torch.optim.lr_scheduler.LambdaLR(
+  #Scheduler
+  if args.scheduler == 'LambdaLR':
+    scheduler = torch.optim.lr_scheduler.LambdaLR(
       optimizer,
       lr_lambda=lambda step: get_lr(  # pylint: disable=g-long-lambda
           step,
           args.epochs * len(train_loader),
           1,  # lr_lambda computes multiplicative factor
           1e-6 / args.learning_rate))
+    
+  elif args.scheduler == 'CosineAnnealingLR':
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+      optimizer = optimizer,
+      T_max=args.epochs * len(train_loader),
+      eta_min=1e-5 / args.learning_rate
+    )
 
   if not os.path.exists(args.save):
     os.makedirs(args.save)
@@ -437,9 +543,19 @@ def main():
         ' Test Error {4:.2f}'
         .format((epoch + 1), int(time.time() - begin_time), train_loss_ema,
                 test_loss, 100 - 100. * test_acc))
+    writer.add_scalar('Training loss',train_loss_ema, epoch + 1 )
+    writer.add_scalar('Test loss', test_loss, epoch + 1)
+    writer.add_scalar('Training Accuracy', 100 - 100. * test_acc, epoch + 1)
 
   test_c_acc = test_c(net, test_data, base_c_path)
   print('Mean Corruption Error: {:.3f}'.format(100 - 100. * test_c_acc))
+
+  if args.dataset == 'cifar10':
+    test_p_acc = test_p(net, base_p_path, num_classes)
+    print('Mean Flipping Rate: {:.3f}'.format(test_p_acc))
+
+  writer.close()
+
 
   with open(log_path, 'a') as f:
     f.write('%03d,%05d,%0.6f,%0.5f,%0.2f\n' %

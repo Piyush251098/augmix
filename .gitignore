@@ -3,3 +3,4 @@ data
 *.pyc
 *.tar
 *.csv
+runs/Cifar10
