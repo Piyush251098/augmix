@@ -545,7 +545,7 @@ def main():
                 test_loss, 100 - 100. * test_acc))
     writer.add_scalar('Training loss',train_loss_ema, epoch + 1 )
     writer.add_scalar('Test loss', test_loss, epoch + 1)
-    writer.add_scalar('Training Accuracy', 100 - 100. * test_acc, epoch + 1)
+    writer.add_scalar('Training Accuracy', test_acc, epoch + 1)
 
   test_c_acc = test_c(net, test_data, base_c_path)
   print('Mean Corruption Error: {:.3f}'.format(100 - 100. * test_c_acc))
